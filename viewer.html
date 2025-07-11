@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Press Release Viewer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        #sidebar { height: 100vh; overflow-y: auto; }
+        .news-item.active { background-color: #3b82f6; color: white; }
+        .loader { border: 8px solid #f3f3f3; border-top: 8px solid #3498db; border-radius: 50%; width: 60px; height: 60px; animation: spin 2s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .calendar-day { stroke: #ccc; stroke-width: 1px; cursor: pointer; }
+        .calendar-day:hover { stroke: #000; stroke-width: 1.5px; }
+        .month-label { font-size: 10px; fill: #777; }
+        .tooltip { position: absolute; text-align: center; width: 150px; padding: 8px; font-size: 12px; background: #333; color: #fff; border: 0; border-radius: 8px; pointer-events: none; opacity: 0; transition: opacity 0.2s; z-index: 100; }
+        .badge-text:hover { text-decoration: underline; cursor: pointer; }
+        .badge-disabled { background-color: #e5e7eb !important; color: #6b7280 !important; text-decoration: line-through; }
+        .badge-disabled .badge-toggle-btn, .badge-disabled .badge-close-btn { color: #6b7280 !important; }
+    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+</head>
+<body class="bg-gray-100 text-gray-800">
+
+    <div id="tooltip" class="tooltip"></div>
+
+    <!-- Edit Modal -->
+    <div id="edit-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
+        <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
+            <div class="mt-3 text-center">
+                <h3 class="text-lg leading-6 font-medium text-gray-900" id="modal-title">Edit Filter</h3>
+                <div class="mt-2 px-7 py-3">
+                    <input type="text" id="modal-input" class="w-full p-2 border border-gray-300 rounded-lg">
+                </div>
+                <div class="items-center px-4 py-3">
+                    <button id="modal-save-btn" class="px-4 py-2 bg-blue-500 text-white text-base font-medium rounded-md w-auto shadow-sm hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-300">Save</button>
+                    <button id="modal-cancel-btn" class="px-4 py-2 bg-gray-200 text-gray-800 text-base font-medium rounded-md w-auto shadow-sm hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-300 ml-2">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="flex h-screen">
+        <!-- Sidebar -->
+        <aside id="sidebar" class="bg-white border-r border-gray-200 flex flex-col" style="width: 45%;">
+            <div class="p-4 border-b border-gray-200 sticky top-0 bg-white z-10">
+                <h1 class="text-xl font-bold">Press Release Viewer</h1>
+                <input type="file" id="db-input" class="mt-2 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"/>
+                <div class="flex items-center space-x-2 mt-2">
+                    <input type="search" id="keyword-input" placeholder="Add keyword filter..." class="w-full p-2 border border-gray-300 rounded-lg" disabled>
+                    <button id="add-filter-btn" class="p-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 whitespace-nowrap" disabled>Add Filter</button>
+                    <button id="lang-switcher" class="hidden p-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 whitespace-nowrap">Switch to Chinese</button>
+                </div>
+                <div id="filter-badges-container" class="mt-2 space-y-2">
+                    <div id="date-badges-section"></div>
+                    <div id="keyword-badges-section"></div>
+                </div>
+            </div>
+            <div id="calendar-container" class="p-4 border-b"></div>
+            <div id="news-list" class="flex-grow p-4">
+                <div id="initial-message" class="text-center text-gray-500 mt-10">Please select your database file to begin.</div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main id="main-content" class="p-8 overflow-y-auto" style="width: 55%;">
+            <div id="content-placeholder" class="text-center text-gray-500">
+                <h2 class="text-2xl font-semibold">Select a news entry to view its details.</h2>
+            </div>
+            <div id="news-content-area" class="hidden">
+                <h2 id="news-title" class="text-3xl font-bold mb-2"></h2>
+                <p id="news-timestamp" class="text-sm text-gray-500 mb-6"></p>
+                <div id="news-body" class="prose max-w-none text-lg leading-relaxed whitespace-pre-wrap"></div>
+                <hr class="my-8">
+                <h3 id="attachments-title" class="text-2xl font-semibold mb-4 hidden">Attachments</h3>
+                <div id="attachments-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+            </div>
+            <div id="loading-indicator" class="hidden items-center justify-center h-full"><div class="loader"></div></div>
+        </main>
+    </div>
+
+    <script>
+        // DOM Elements
+        const elements = {
+            dbInput: document.getElementById('db-input'),
+            newsListContainer: document.getElementById('news-list'),
+            initialMessage: document.getElementById('initial-message'),
+            contentPlaceholder: document.getElementById('content-placeholder'),
+            newsContentArea: document.getElementById('news-content-area'),
+            newsTitle: document.getElementById('news-title'),
+            newsTimestamp: document.getElementById('news-timestamp'),
+            newsBody: document.getElementById('news-body'),
+            attachmentsTitle: document.getElementById('attachments-title'),
+            attachmentsContainer: document.getElementById('attachments-container'),
+            loadingIndicator: document.getElementById('loading-indicator'),
+            keywordInput: document.getElementById('keyword-input'),
+            addFilterBtn: document.getElementById('add-filter-btn'),
+            calendarContainer: document.getElementById('calendar-container'),
+            langSwitcher: document.getElementById('lang-switcher'),
+            tooltip: document.getElementById('tooltip'),
+            dateBadgesSection: document.getElementById('date-badges-section'),
+            keywordBadgesSection: document.getElementById('keyword-badges-section'),
+            editModal: document.getElementById('edit-modal'),
+            modalTitle: document.getElementById('modal-title'),
+            modalInput: document.getElementById('modal-input'),
+            modalSaveBtn: document.getElementById('modal-save-btn'),
+            modalCancelBtn: document.getElementById('modal-cancel-btn'),
+        };
+
+        let db;
+        let allNewsEntries = [];
+        // ENHANCEMENT: Filters are now objects with an enabled state
+        let selectedDateFilters = []; // e.g., { value: '2024-01-01', enabled: true }
+        let keywordFilters = []; // e.g., { type: 'AND', terms: ['customs'], enabled: true }
+        let currentEntry = null;
+        let currentLanguage = localStorage.getItem('preferredLanguage') || 'EN';
+        let editingFilter = { type: null, index: null };
+
+        // --- Initialization ---
+        const sqlPromise = initSqlJs({ locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/${file}` })
+            .catch(err => {
+                console.error("SQL.js initialization failed:", err);
+                alert("Failed to load SQL.js library.");
+            });
+
+        elements.dbInput.addEventListener('change', handleDbFileSelect);
+        elements.addFilterBtn.addEventListener('click', addKeywordFilter);
+        elements.keywordInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                addKeywordFilter();
+            }
+        });
+        elements.langSwitcher.addEventListener('click', toggleLanguage);
+        elements.modalCancelBtn.addEventListener('click', closeEditModal);
+        elements.modalSaveBtn.addEventListener('click', saveEdit);
+        updateLanguageSwitcherButton();
+
+
+        // --- Database and Data Loading ---
+        async function handleDbFileSelect(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            setLoading(true);
+            clearContentView();
+            elements.newsListContainer.innerHTML = '';
+            elements.initialMessage.textContent = 'Loading database...';
+
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+                try {
+                    const SQL = await sqlPromise;
+                    db = new SQL.Database(new Uint8Array(e.target.result));
+                    fetchAllNewsData();
+                    elements.keywordInput.disabled = false;
+                    elements.addFilterBtn.disabled = false;
+                    elements.langSwitcher.classList.remove('hidden');
+                } catch (err) {
+                    console.error(err);
+                    alert("Failed to load database. Ensure it's a valid SQLite file.");
+                    elements.initialMessage.textContent = 'Error: Could not read the database file.';
+                } finally {
+                    setLoading(false);
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function fetchAllNewsData() {
+            if (!db) return;
+            const stmt = db.prepare("SELECT * FROM press_releases ORDER BY date DESC, sequence_in_day ASC");
+            allNewsEntries = [];
+            while (stmt.step()) {
+                allNewsEntries.push(stmt.getAsObject());
+            }
+            stmt.free();
+            rerenderAll();
+        }
+
+        // --- Rendering ---
+        function renderNewsList() {
+            elements.initialMessage.style.display = 'none';
+            elements.newsListContainer.innerHTML = '';
+            
+            const filteredEntries = allNewsEntries.filter(entry => {
+                const matchesLang = entry.language === currentLanguage;
+                const activeDateFilters = selectedDateFilters.filter(f => f.enabled).map(f => f.value);
+                const matchesDate = activeDateFilters.length === 0 || activeDateFilters.includes(entry.date);
+                const matchesKeyword = checkKeywordFilters(entry.title);
+                return matchesLang && matchesDate && matchesKeyword;
+            });
+
+            const entriesByDate = d3.group(filteredEntries, d => d.date);
+
+            if (filteredEntries.length === 0) {
+                elements.newsListContainer.innerHTML = `<div class="text-center text-gray-500 mt-4">No entries match your filter.</div>`;
+                return;
+            }
+
+            for (const [date, entries] of entriesByDate) {
+                const dateHeader = document.createElement('h3');
+                dateHeader.className = 'text-lg font-semibold mt-4 mb-2 sticky top-0 bg-gray-50 py-1';
+                dateHeader.textContent = new Date(date + 'T00:00:00').toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+                elements.newsListContainer.appendChild(dateHeader);
+
+                const list = document.createElement('ul');
+                list.className = 'space-y-1';
+                entries.forEach(entry => {
+                    const listItem = document.createElement('li');
+                    // UI FIX: Compact list item styling
+                    listItem.className = 'news-item py-1.5 px-2 rounded-lg cursor-pointer hover:bg-gray-200 transition-colors duration-150';
+                    listItem.textContent = entry.title;
+                    listItem.dataset.url = entry.url;
+                    listItem.addEventListener('click', () => {
+                        document.querySelectorAll('.news-item.active').forEach(el => el.classList.remove('active'));
+                        listItem.classList.add('active');
+                        loadNewsEntry(entry.url);
+                    });
+                    list.appendChild(listItem);
+                });
+                elements.newsListContainer.appendChild(list);
+            }
+        }
+
+        function loadNewsEntry(url) {
+            currentEntry = allNewsEntries.find(e => e.url === url);
+            displayEntry(currentEntry);
+        }
+
+        function displayEntry(entry) {
+            if (!entry) {
+                clearContentView();
+                return;
+            }
+            elements.contentPlaceholder.style.display = 'none';
+            elements.newsContentArea.classList.remove('hidden');
+
+            elements.newsTitle.textContent = entry.title;
+            elements.newsTimestamp.textContent = entry.timestamp;
+            elements.newsBody.textContent = entry.content;
+
+            const attachmentsStmt = db.prepare("SELECT * FROM attachments WHERE release_url = :url");
+            attachmentsStmt.bind({ ':url': entry.url });
+            
+            elements.attachmentsContainer.innerHTML = '';
+            let hasAttachments = false;
+            while (attachmentsStmt.step()) {
+                hasAttachments = true;
+                const attachment = attachmentsStmt.getAsObject();
+                const container = document.createElement('div');
+                container.className = 'p-2 border rounded-lg bg-gray-50';
+                const isImage = ['jpg', 'jpeg', 'png', 'gif'].includes(attachment.file_type);
+
+                if (isImage && attachment.base64_data) {
+                    const img = document.createElement('img');
+                    img.className = 'rounded-lg shadow-md w-full h-auto object-cover';
+                    img.src = `data:image/${attachment.file_type};base64,${attachment.base64_data}`;
+                    container.appendChild(img);
+                } else {
+                    const link = document.createElement('a');
+                    link.href = attachment.attachment_url;
+                    link.target = '_blank';
+                    link.className = 'font-medium text-blue-600 hover:underline';
+                    link.textContent = `Download ${attachment.file_type.toUpperCase()} file`;
+                    container.innerHTML = `<svg class="w-6 h-6 inline-block mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>`;
+                    container.appendChild(link);
+                }
+                elements.attachmentsContainer.appendChild(container);
+            }
+            attachmentsStmt.free();
+            elements.attachmentsTitle.classList.toggle('hidden', !hasAttachments);
+        }
+        
+        function toggleLanguage() {
+            const correspondingUrl = currentEntry ? currentEntry.corresponding_url : null;
+            currentLanguage = currentLanguage === 'EN' ? 'ZH' : 'EN';
+            localStorage.setItem('preferredLanguage', currentLanguage);
+            updateLanguageSwitcherButton();
+            rerenderAll();
+
+            if (correspondingUrl) {
+                const newEntry = allNewsEntries.find(e => e.url === correspondingUrl);
+                loadNewsEntry(newEntry ? newEntry.url : null);
+                setTimeout(() => {
+                    document.querySelectorAll('.news-item.active').forEach(el => el.classList.remove('active'));
+                    const newListItem = document.querySelector(`.news-item[data-url="${correspondingUrl}"]`);
+                    if (newListItem) newListItem.classList.add('active');
+                }, 0);
+            } else {
+                clearContentView();
+            }
+        }
+
+        // --- Calendar Heatmap ---
+        function renderCalendar() {
+            if (allNewsEntries.length === 0) return;
+            
+            // FIX: Filter entries first to get accurate counts for heatmap colors and tooltips
+            const filteredEntries = allNewsEntries.filter(e => checkKeywordFilters(e.title));
+            const countsByDate = d3.rollup(filteredEntries, v => v.length, d => d.date);
+            const values = Array.from(countsByDate.values());
+            
+            const years = d3.groups(allNewsEntries, d => new Date(d.date).getFullYear()).sort((a,b) => b[0] - a[0]);
+            const width = elements.calendarContainer.clientWidth;
+            const chartWidth = width - 40;
+            const cellSize = Math.floor(chartWidth / 53);
+            elements.calendarContainer.innerHTML = '';
+
+            for (const [year, data] of years) {
+                const height = cellSize * 7 + 30;
+                const svg = d3.select(elements.calendarContainer).append("svg").attr("width", width).attr("height", height).append("g").attr("transform", `translate(30, 20)`);
+                svg.append("text").attr("x", -25).attr("y", -5).attr("font-size", "14px").attr("font-weight", "bold").text(year);
+                const color = d3.scaleSequential(d3.interpolateBlues).domain([0, d3.max(values) || 1]);
+                svg.selectAll(".day").data(d3.timeDays(new Date(year, 0, 1), new Date(year + 1, 0, 1))).enter().append("rect").attr("class", "calendar-day").attr("width", cellSize - 1).attr("height", cellSize - 1).attr("x", d => d3.timeWeek.count(d3.timeYear(d), d) * cellSize).attr("y", d => d.getDay() * cellSize).datum(d3.timeFormat("%Y-%m-%d")).attr("fill", d => { return countsByDate.has(d) ? color(countsByDate.get(d)) : "#eee"; }).on("mouseover", (event, d) => { elements.tooltip.style.opacity = 1; elements.tooltip.innerHTML = `${d}<br>${countsByDate.get(d) || 0} releases`; }).on("mousemove", (event) => { elements.tooltip.style.left = (event.pageX + 15) + 'px'; elements.tooltip.style.top = (event.pageY - 15) + 'px'; }).on("mouseout", () => elements.tooltip.style.opacity = 0).on("click", (event, d) => { const index = selectedDateFilters.findIndex(f => f.value === d); if (index > -1) { selectedDateFilters.splice(index, 1); } else { selectedDateFilters.push({ value: d, enabled: true }); } rerenderAll(); });
+                svg.selectAll(".month").data(d3.timeMonths(new Date(year, 0, 1), new Date(year + 1, 0, 1))).enter().append("text").text(d3.timeFormat("%b")).attr("x", d => d3.timeWeek.count(d3.timeYear(d), d3.timeSunday.ceil(d)) * cellSize).attr("y", -5).attr("class", "month-label");
+            }
+        }
+
+        // --- Filter Badge Management ---
+        function renderFilterBadges() {
+            elements.dateBadgesSection.innerHTML = '';
+            elements.keywordBadgesSection.innerHTML = '';
+            
+            if (selectedDateFilters.length > 0) {
+                selectedDateFilters.sort((a,b) => a.value.localeCompare(b.value)).forEach((filter, index) => {
+                    createBadge(filter, 'date', index, elements.dateBadgesSection);
+                });
+            }
+
+            if (keywordFilters.length > 0) {
+                const title = document.createElement('h4');
+                title.className = 'w-full text-sm font-semibold text-gray-600';
+                title.textContent = 'Keyword Filters (OR)';
+                elements.keywordBadgesSection.appendChild(title);
+                keywordFilters.forEach((filter, index) => {
+                    createBadge(filter, 'keyword', index, elements.keywordBadgesSection);
+                });
+            }
+        }
+
+        function createBadge(filter, type, index, container) {
+            const badge = document.createElement('span');
+            const bgColor = type === 'date' ? 'bg-blue-100' : 'bg-green-100';
+            const textColor = type === 'date' ? 'text-blue-800' : 'text-green-800';
+            badge.className = `inline-flex items-center px-2 py-1 text-xs font-medium ${textColor} ${bgColor} rounded-full`;
+            if (!filter.enabled) {
+                badge.classList.add('badge-disabled');
+            }
+            
+            // ENHANCEMENT: Toggle button (eye icon)
+            const toggleButton = document.createElement('button');
+            toggleButton.className = 'badge-toggle-btn mr-1.5 inline-flex items-center justify-center h-4 w-4 rounded-full focus:outline-none';
+            toggleButton.innerHTML = filter.enabled ? `<svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>` : `<svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.542-7 .946-3.11 3.278-5.766 6.212-6.953M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3l18 18"></path></svg>`;
+            toggleButton.onclick = () => {
+                filter.enabled = !filter.enabled;
+                rerenderAll();
+            };
+            badge.appendChild(toggleButton);
+
+            const textSpan = document.createElement('span');
+            textSpan.className = 'badge-text';
+            textSpan.textContent = type === 'date' ? filter.value : filter.terms.join(` ${filter.type} `);
+            textSpan.onclick = () => openEditModal(type, index);
+            badge.appendChild(textSpan);
+
+            const closeButton = document.createElement('button');
+            closeButton.className = `badge-close-btn ml-1.5 inline-flex items-center justify-center h-4 w-4 rounded-full focus:outline-none`;
+            closeButton.innerHTML = `<svg class="h-2 w-2" stroke="currentColor" fill="none" viewBox="0 0 8 8"><path stroke-linecap="round" stroke-width="1.5" d="M1 1l6 6m0-6L1 7" /></svg>`;
+            closeButton.onclick = () => {
+                if (type === 'date') selectedDateFilters.splice(index, 1);
+                else if (type === 'keyword') keywordFilters.splice(index, 1);
+                rerenderAll();
+            };
+            badge.appendChild(closeButton);
+            container.appendChild(badge);
+        }
+
+        // --- Keyword Filter Logic ---
+        function addKeywordFilter() {
+            const text = elements.keywordInput.value.trim();
+            if (!text) return;
+            const upperText = text.toUpperCase();
+            if (upperText.includes(' AND ')) {
+                const terms = upperText.split(' AND ').map(t => t.trim().toLowerCase()).filter(Boolean);
+                if (terms.length > 0) keywordFilters.push({ type: 'AND', terms, enabled: true });
+            } else {
+                keywordFilters.push({ type: 'OR', terms: [text.toLowerCase()], enabled: true });
+            }
+            elements.keywordInput.value = '';
+            rerenderAll();
+        }
+
+        function checkKeywordFilters(title) {
+            const activeFilters = keywordFilters.filter(f => f.enabled);
+            if (activeFilters.length === 0) return true;
+            const lowerTitle = title.toLowerCase();
+            return activeFilters.some(filter => {
+                if (filter.type === 'AND') return filter.terms.every(term => lowerTitle.includes(term));
+                else return filter.terms.some(term => lowerTitle.includes(term));
+            });
+        }
+        
+        // --- Modal Logic ---
+        function openEditModal(type, index) {
+            editingFilter = { type, index };
+            elements.modalInput.type = 'text';
+            if (type === 'date') {
+                elements.modalTitle.textContent = 'Edit Date Filter';
+                elements.modalInput.value = selectedDateFilters[index].value;
+                elements.modalInput.type = 'date';
+            } else if (type === 'keyword') {
+                elements.modalTitle.textContent = 'Edit Keyword Filter';
+                const filter = keywordFilters[index];
+                elements.modalInput.value = filter.terms.join(` ${filter.type} `);
+            }
+            elements.editModal.classList.remove('hidden');
+        }
+
+        function closeEditModal() {
+            elements.editModal.classList.add('hidden');
+            editingFilter = { type: null, index: null };
+        }
+
+        function saveEdit() {
+            const { type, index } = editingFilter;
+            const newValue = elements.modalInput.value.trim();
+            if (!newValue) return;
+
+            if (type === 'date') {
+                selectedDateFilters[index].value = newValue;
+            } else if (type === 'keyword') {
+                const upperText = newValue.toUpperCase();
+                const currentFilter = keywordFilters[index];
+                if (upperText.includes(' AND ')) {
+                    currentFilter.terms = upperText.split(' AND ').map(t => t.trim().toLowerCase()).filter(Boolean);
+                    currentFilter.type = 'AND';
+                } else {
+                    currentFilter.terms = [newValue.toLowerCase()];
+                    currentFilter.type = 'OR';
+                }
+            }
+            closeEditModal();
+            rerenderAll();
+        }
+
+        // --- Utility ---
+        function setLoading(isLoading) {
+            elements.loadingIndicator.classList.toggle('hidden', !isLoading);
+            elements.loadingIndicator.classList.toggle('flex', isLoading);
+        }
+
+        function clearContentView() {
+            elements.newsContentArea.classList.add('hidden');
+            elements.contentPlaceholder.style.display = 'block';
+            currentEntry = null;
+        }
+        
+        function updateLanguageSwitcherButton() {
+            elements.langSwitcher.textContent = currentLanguage === 'EN' ? 'Switch to Chinese' : 'Switch to English';
+        }
+
+        function rerenderAll() {
+            renderFilterBadges();
+            renderNewsList();
+            renderCalendar();
+        }
+
+    </script>
+</body>
+</html>
